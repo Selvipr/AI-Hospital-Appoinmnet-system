@@ -36,6 +36,18 @@ export default function DoctorCard({ doctor }) {
             <p style={{ fontSize: 13, color: 'var(--primary)', fontWeight: 600, margin: '2px 0 0' }}>
               {spec}
             </p>
+            {doctor.availability_status && doctor.availability_status !== 'AVAILABLE' && (
+              <span className={`doctor-status-badge status-${doctor.availability_status.toLowerCase().replace('_', '-')}`} style={{ marginTop: 4 }}>
+                <i className={`bi ${doctor.availability_status === 'OFFLINE' ? 'bi-moon-fill' : doctor.availability_status === 'UNAVAILABLE' ? 'bi-dash-circle-fill' : 'bi-x-circle-fill'}`} style={{ fontSize: 7 }} />
+                {doctor.availability_status === 'OFFLINE' ? 'Offline' : doctor.availability_status === 'UNAVAILABLE' ? 'Unavailable' : 'Not in Service'}
+              </span>
+            )}
+            {(!doctor.availability_status || doctor.availability_status === 'AVAILABLE') && (
+              <span className="doctor-status-badge status-available" style={{ marginTop: 4 }}>
+                <i className="bi bi-circle-fill" style={{ fontSize: 7 }} />
+                Available
+              </span>
+            )}
           </div>
         </div>
 

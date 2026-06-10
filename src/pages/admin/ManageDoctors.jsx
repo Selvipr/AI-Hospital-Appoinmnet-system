@@ -46,15 +46,13 @@ export default function ManageDoctors() {
     try {
       setCreating(true)
 
-      // SECURITY: We do NOT call supabase.auth.signUp() here because it would
-      // hijack the admin's session and log them in as the new doctor.
-      // Instead, we create the auth user via signUp in a way that doesn't auto-login,
-      // by immediately signing back in as admin after.
-      
-      // Step 1: Store current admin session
+      // Step 1: Store current admin session BEFORE signUp
       const { data: adminSession } = await supabase.auth.getSession()
-      
+      const adminAccessToken = adminSession?.session?.access_token
+      const adminRefreshToken = adminSession?.session?.refresh_token
+
       // Step 2: Create doctor auth account
+      // NOTE: This will trigger handle_new_user() which creates a profile with role=PATIENT
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: form.email,
         password: form.password,
@@ -62,15 +60,46 @@ export default function ManageDoctors() {
       })
       if (authError) throw authError
 
-      // Step 3: Create profile and doctor records
-      if (authData?.user) {
-        await supabase.from('profiles').upsert([{
-          id: authData.user.id,
-          name: form.name, email: form.email, phone: form.phone,
-          role: 'DOCTOR', is_active: true
-        }], { onConflict: 'id' })
+      // Step 3: IMMEDIATELY restore admin session before any DB operations
+      // This is critical — signUp may have changed the auth context
+      if (adminRefreshToken) {
+        await supabase.auth.setSession({
+          access_token: adminAccessToken,
+          refresh_token: adminRefreshToken
+        })
+      }
 
-        await supabase.from('doctors').insert([{
+      // Step 4: Wait for the trigger to create the profile
+      await new Promise(r => setTimeout(r, 1000))
+
+      if (authData?.user) {
+        // Step 5: Use the admin RPC function to set role to DOCTOR
+        // This bypasses the RLS policy that prevents role changes via direct update
+        const { error: roleError } = await supabase.rpc('admin_set_user_role', {
+          target_user_id: authData.user.id,
+          new_role: 'DOCTOR'
+        })
+        if (roleError) {
+          console.error('Role update failed, trying direct update:', roleError)
+          // Fallback: try direct update (works if admin has the right permissions)
+          const { error: directError } = await supabase
+            .from('profiles')
+            .update({ role: 'DOCTOR', name: form.name, phone: form.phone })
+            .eq('id', authData.user.id)
+          if (directError) {
+            console.error('Direct update also failed:', directError)
+            throw new Error('Account created but role update failed. Please update the role manually in the database.')
+          }
+        }
+
+        // Step 6: Update profile name/phone (trigger may have set them from metadata)
+        await supabase
+          .from('profiles')
+          .update({ name: form.name, phone: form.phone })
+          .eq('id', authData.user.id)
+
+        // Step 7: Create doctor record
+        const { error: docError } = await supabase.from('doctors').insert([{
           user_id: authData.user.id,
           specialization: form.specialization,
           qualification: form.qualification,
@@ -79,14 +108,7 @@ export default function ManageDoctors() {
           department_id: form.department_id || null,
           is_active: true
         }])
-      }
-
-      // Step 4: Restore admin session if it was replaced
-      if (adminSession?.session) {
-        await supabase.auth.setSession({
-          access_token: adminSession.session.access_token,
-          refresh_token: adminSession.session.refresh_token
-        })
+        if (docError) throw docError
       }
 
       toast.success('Doctor account created successfully!')
@@ -94,9 +116,8 @@ export default function ManageDoctors() {
       setForm({ name: '', email: '', phone: '', password: '', specialization: '', qualification: '', experience_years: 0, consultation_fee: 0, department_id: '' })
       loadData()
     } catch (err) {
+      console.error('Doctor creation error:', err)
       toast.error(err.message || 'Failed to create doctor')
-      // Try to restore admin session on error
-      window.location.reload()
     } finally {
       setCreating(false)
     }
